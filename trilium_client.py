@@ -259,26 +259,94 @@ class TriliumClient:
                 return (attachment_id, image_html)
                 
             else:
-                # 对于非图片文件，创建普通的附件
+                # 对于非图片文件（音频、文档等），使用两步上传
+                # 关键：音频文件使用 'file' role，其他用 'attachment' role
+                if mime_type.startswith('audio/'):
+                    role = 'file'  # 音频文件使用file角色，Trilium会显示播放器
+                else:
+                    role = 'attachment'  # 其他文件使用attachment角色
+                
                 attachment_data = {
                     'ownerId': note_id,
-                    'role': 'attachment',
+                    'role': role,
                     'mime': mime_type,
                     'title': filename,
-                    'content': content_base64,
+                    # 注意：不包含content字段
                     'position': 10
                 }
 
-                logger.info(f"正在创建文件附件...")
-                attachment = self._make_request('POST', '/attachments', attachment_data)
+                logger.info(f"步骤1: 正在创建附件记录（类型: {mime_type}, 角色: {role}）...")
+                
+                try:
+                    attachment = self._make_request('POST', '/attachments', attachment_data)
+                except Exception as api_error:
+                    logger.error(f"API请求失败，错误详情: {api_error}")
+                    if hasattr(api_error, 'response') and api_error.response is not None:
+                        logger.error(f"HTTP状态码: {api_error.response.status_code}")
+                        logger.error(f"响应体: {api_error.response.text[:500]}")
+                    raise
+                
                 if not attachment:
-                    raise Exception("创建文件附件失败")
+                    raise Exception("创建附件记录失败")
                     
                 attachment_id = attachment.get('attachmentId')
-                logger.info(f"✅ 成功创建文件附件: {attachment_id}, 文件: {filename}")
+                if not attachment_id:
+                    logger.error(f"返回的attachment对象: {attachment}")
+                    raise Exception("attachment响应中没有attachmentId")
                 
-                # 生成文件链接的HTML
-                file_html = f'<p><a href="api/attachments/{attachment_id}/download">{filename}</a></p>'
+                logger.info(f"✅ 步骤1完成: 创建附件记录 {attachment_id}")
+                
+                # 步骤2: 上传原始二进制内容
+                logger.info(f"步骤2: 正在上传文件二进制内容...")
+                content_url = f"{self.server_url}/etapi/attachments/{attachment_id}/content"
+                
+                upload_headers = {
+                    'Authorization': self.api_token,
+                    'Content-Type': 'application/octet-stream'
+                }
+                
+                try:
+                    response = requests.put(content_url, headers=upload_headers, data=file_data)
+                    response.raise_for_status()
+                    logger.info(f"✅ 步骤2完成: 成功上传文件内容，大小: {file_size} bytes")
+                except Exception as upload_error:
+                    logger.error(f"❌ 步骤2失败: 上传文件内容失败")
+                    logger.error(f"错误: {upload_error}")
+                    if hasattr(upload_error, 'response') and upload_error.response is not None:
+                        logger.error(f"HTTP状态码: {upload_error.response.status_code}")
+                        logger.error(f"响应体: {upload_error.response.text}")
+                    raise
+                
+                # 验证上传结果
+                try:
+                    verify_url = f"{self.server_url}/etapi/attachments/{attachment_id}"
+                    verify_headers = {'Authorization': self.api_token}
+                    verify_response = requests.get(verify_url, headers=verify_headers)
+                    verify_response.raise_for_status()
+                    attachment_info = verify_response.json()
+                    
+                    content_length = attachment_info.get('contentLength', 0)
+                    logger.info(f"📏 最终内容长度: {content_length} bytes (原始文件: {file_size} bytes)")
+                    
+                    if content_length == file_size:
+                        logger.info(f"✅ 验证成功：内容长度匹配！")
+                    else:
+                        logger.warning(f"⚠️ 警告：内容长度不匹配！")
+                    
+                except Exception as verify_error:
+                    logger.warning(f"⚠️ 验证失败: {verify_error}")
+                
+                # 根据文件类型生成不同的HTML
+                if mime_type.startswith('audio/'):
+                    # 音频文件：使用Trilium内部引用（方案B）
+                    file_html = f'<p>🎤 <a class="reference-link" href="#root/{note_id}?viewMode=attachments&attachmentId={attachment_id}">{filename}</a></p>'
+                    logger.info(f"📝 生成音频附件HTML（Trilium内部引用）")
+                else:
+                    # 其他文件：使用下载链接
+                    file_html = f'<p>📎 <a href="api/attachments/{attachment_id}/download">{filename}</a></p>'
+                    logger.info(f"📝 生成文件附件HTML（下载链接）")
+                
+                logger.info(f"🔗 附件访问路径: {self.server_url}/api/attachments/{attachment_id}/download")
                 
                 return (attachment_id, file_html)
 

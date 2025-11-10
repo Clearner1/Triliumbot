@@ -7,7 +7,7 @@ import os
 import tempfile
 from config import Config
 from trilium_client import TriliumClient
-from utils import extract_hashtags, format_message_content
+from utils import extract_hashtags, format_message_content, get_time_period, get_hour_section, check_section_exists
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +19,32 @@ class TelegramBotHandler:
         self.trilium_client = TriliumClient()
         self.allowed_users = []  # 可以在配置中添加允许的用户ID列表
 
+    def build_time_hierarchy(self, current_content, current_time):
+        """构建时间层次结构
+        
+        Args:
+            current_content: 当前笔记内容
+            current_time: datetime对象
+            
+        Returns:
+            str: 需要添加的时间层次标题
+        """
+        hour = current_time.hour
+        time_period = get_time_period(hour)
+        hour_section = get_hour_section(hour)
+        
+        hierarchy = ""
+        
+        # 检查并添加时间段标题 (H1)
+        if not check_section_exists(current_content, time_period):
+            hierarchy += f"\n\n<h1>{time_period}</h1>\n"
+        
+        # 检查并添加小时段标题 (H2)
+        if not check_section_exists(current_content, hour_section):
+            hierarchy += f"\n<h2>{hour_section}</h2>\n"
+        
+        return hierarchy
+
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """处理 /start 命令"""
         welcome_message = """
@@ -29,6 +55,7 @@ class TelegramBotHandler:
 支持的功能：
 📝 文本消息 - 直接保存为日记内容
 🖼️ 图片 - 保存图片并添加描述
+🎤 语音消息 - 保存语音并显示时长
 📄 文件 - 保存文件附件
 🏷️ 标签 - 使用 #标签 来组织内容
 
@@ -56,7 +83,8 @@ class TelegramBotHandler:
 
 🔸 支持的消息类型：
 • 文本消息
-• 图片（会自动上传）
+• 图片（会自动上传并显示）
+• 语音消息（会保存并可在Trilium中播放）
 • 文件（会自动上传）
 
 🔸 命令列表：
@@ -69,6 +97,7 @@ class TelegramBotHandler:
 🔸 示例：
 今天天气很好 #生活 #心情
 完成了Python项目的开发 #工作 #编程
+[发送语音消息] - 自动保存语音并记录时长
         """
         await update.message.reply_text(help_text)
 
@@ -160,18 +189,34 @@ class TelegramBotHandler:
         """处理文本消息"""
         try:
             message_text = update.message.text
+            current_time = datetime.now()
 
             # 提取标签
             hashtags = extract_hashtags(message_text)
 
-            # 格式化消息内容
-            formatted_content, all_hashtags = format_message_content(message_text, hashtags)
+            # 获取日记笔记
+            diary_note = self.trilium_client.get_or_create_diary_note()
+            note_id = diary_note.get('noteId') if isinstance(diary_note, dict) else diary_note.note_id
 
-            # 保存到Trilium
-            self.trilium_client.append_message_to_diary(
-                message_content=message_text,
-                hashtags=all_hashtags
-            )
+            # 获取当前笔记内容
+            current_content = self.trilium_client.get_note_content(note_id)
+
+            # 构建时间层次
+            new_entry = self.build_time_hierarchy(current_content, current_time)
+
+            # 添加具体时间和内容 (H3)
+            time_str = current_time.strftime('%H:%M:%S')
+            new_entry += f"\n<h3>{time_str}</h3>\n\n"
+            new_entry += f"<p>{message_text}</p>\n\n"
+
+            # 如果有标签，添加到消息中
+            if hashtags:
+                tags_html = ", ".join([f"<span class='label'>#{tag}</span>" for tag in hashtags])
+                new_entry += f"<p><strong>标签:</strong> {tags_html}</p>\n"
+
+            # 更新笔记内容
+            updated_content = current_content + new_entry
+            self.trilium_client.update_note_content(note_id, updated_content)
 
             # 发送确认消息
             await update.message.reply_text("✅ 消息已保存到日记")
@@ -210,10 +255,14 @@ class TelegramBotHandler:
 
                 # 获取当前笔记内容
                 current_content = self.trilium_client.get_note_content(note_id)
+                current_time = datetime.now()
                 
-                # 构建新的内容条目（包含描述文字和图片）
-                current_time = datetime.now().strftime('%H:%M:%S')
-                new_entry = f"\n\n<h2>{current_time}</h2>\n\n"
+                # 构建时间层次
+                new_entry = self.build_time_hierarchy(current_content, current_time)
+                
+                # 添加具体时间和内容 (H3)
+                time_str = current_time.strftime('%H:%M:%S')
+                new_entry += f"\n<h3>{time_str}</h3>\n\n"
                 
                 # 添加图片描述
                 if caption and caption != "图片":
@@ -225,7 +274,7 @@ class TelegramBotHandler:
                 # 如果有标签，添加到消息中
                 if hashtags:
                     tags_html = ", ".join([f"<span class='label'>#{tag}</span>" for tag in hashtags])
-                    new_entry += f"<p><strong>标签:</strong> {tags_html}</p>"
+                    new_entry += f"<p><strong>标签:</strong> {tags_html}</p>\n"
                 
                 # 更新笔记内容
                 updated_content = current_content + new_entry
@@ -245,6 +294,111 @@ class TelegramBotHandler:
             import traceback
             logger.error(f"错误详情: {traceback.format_exc()}")
             await update.message.reply_text("❌ 保存图片失败，请稍后重试")
+        
+        finally:
+            # 清理临时文件
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.unlink(temp_file_path)
+                    logger.debug(f"临时文件已删除: {temp_file_path}")
+                except Exception as file_error:
+                    logger.warning(f"删除临时文件失败: {file_error}")
+
+    def convert_ogg_to_mp3(self, ogg_path):
+        """将OGG文件重命名为MP3扩展名（简单方案）
+        
+        Telegram的语音文件虽然是OGG格式，但Trilium可以通过文件内容识别，
+        只需改扩展名为.mp3即可在Trilium中播放。
+        """
+        try:
+            # 生成MP3文件路径（仅改扩展名，不转换内容）
+            mp3_path = ogg_path.replace('.ogg', '.mp3')
+            
+            # 重命名文件
+            os.rename(ogg_path, mp3_path)
+            logger.info(f"✅ 音频文件重命名: .ogg → .mp3 (无需转码)")
+            
+            return mp3_path
+                
+        except Exception as e:
+            logger.warning(f"重命名失败: {e}，使用原始OGG文件")
+            return ogg_path
+
+    async def handle_voice_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """处理语音消息"""
+        temp_file_path = None
+        try:
+            # 获取语音文件
+            voice = update.message.voice
+            file = await context.bot.get_file(voice.file_id)
+            
+            # 生成带时间戳的文件名
+            current_time = datetime.now()
+            filename = f"voice_{current_time.strftime('%m-%d-%Y_%H-%M-%S')}.ogg"
+            
+            # 下载语音文件到临时文件
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.ogg') as temp_file:
+                temp_file_path = temp_file.name
+                await file.download_to_drive(temp_file_path)
+            
+            # 重命名文件为有意义的名称
+            final_temp_path = os.path.join(os.path.dirname(temp_file_path), filename)
+            os.rename(temp_file_path, final_temp_path)
+            temp_file_path = final_temp_path
+            
+            # 尝试转换为MP3（如果ffmpeg可用）
+            original_path = temp_file_path
+            temp_file_path = self.convert_ogg_to_mp3(temp_file_path)
+            final_filename = os.path.basename(temp_file_path)
+            
+            # 获取语音时长信息
+            duration = voice.duration
+            
+            # 获取日记笔记
+            diary_note = self.trilium_client.get_or_create_diary_note()
+            note_id = diary_note.get('noteId') if isinstance(diary_note, dict) else diary_note.note_id
+            
+            # 上传语音附件
+            try:
+                attachment_id, voice_html = self.trilium_client.upload_attachment(temp_file_path, note_id)
+                
+                file_format = "MP3" if temp_file_path.endswith('.mp3') else "OGG"
+                logger.info(f"语音上传成功: {attachment_id}, 格式: {file_format}, 时长: {duration}秒")
+                
+                # 获取当前笔记内容
+                current_content = self.trilium_client.get_note_content(note_id)
+                
+                # 构建时间层次
+                new_entry = self.build_time_hierarchy(current_content, current_time)
+                
+                # 添加具体时间和内容 (H3)
+                time_str = current_time.strftime('%H:%M:%S')
+                new_entry += f"\n<h3>{time_str}</h3>\n\n"
+                
+                # 添加语音描述
+                new_entry += f"<p>🎤 语音消息 ({duration}秒)</p>\n\n"
+                
+                # 添加语音链接HTML
+                new_entry += f"{voice_html}\n\n"
+                
+                # 更新笔记内容
+                updated_content = current_content + new_entry
+                self.trilium_client.update_note_content(note_id, updated_content)
+                
+                await update.message.reply_text(f"✅ 语音已保存到日记\n🎤 附件ID: {attachment_id}\n⏱️ 时长: {duration}秒\n📁 格式: {file_format}")
+                logger.info(f"用户 {update.effective_user.id} 保存语音到日记，附件ID: {attachment_id}")
+                
+            except Exception as upload_error:
+                logger.error(f"上传语音失败: {upload_error}")
+                import traceback
+                logger.error(f"错误详情: {traceback.format_exc()}")
+                await update.message.reply_text(f"❌ 保存语音失败: {str(upload_error)}")
+        
+        except Exception as e:
+            logger.error(f"处理语音消息失败: {e}")
+            import traceback
+            logger.error(f"错误详情: {traceback.format_exc()}")
+            await update.message.reply_text("❌ 保存语音失败，请稍后重试")
         
         finally:
             # 清理临时文件
@@ -282,10 +436,14 @@ class TelegramBotHandler:
 
                 # 获取当前笔记内容
                 current_content = self.trilium_client.get_note_content(note_id)
+                current_time = datetime.now()
                 
-                # 构建新的内容条目
-                current_time = datetime.now().strftime('%H:%M:%S')
-                new_entry = f"\n\n<h2>{current_time}</h2>\n\n"
+                # 构建时间层次
+                new_entry = self.build_time_hierarchy(current_content, current_time)
+                
+                # 添加具体时间和内容 (H3)
+                time_str = current_time.strftime('%H:%M:%S')
+                new_entry += f"\n<h3>{time_str}</h3>\n\n"
                 
                 # 添加文档描述
                 new_entry += f"<p>文档: {document.file_name}</p>\n\n"
@@ -296,7 +454,7 @@ class TelegramBotHandler:
                 # 如果有标签，添加到消息中
                 if hashtags:
                     tags_html = ", ".join([f"<span class='label'>#{tag}</span>" for tag in hashtags])
-                    new_entry += f"<p><strong>标签:</strong> {tags_html}</p>"
+                    new_entry += f"<p><strong>标签:</strong> {tags_html}</p>\n"
                 
                 # 更新笔记内容
                 updated_content = current_content + new_entry
@@ -339,6 +497,7 @@ class TelegramBotHandler:
         # 消息处理器
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text_message))
         application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo_message))
+        application.add_handler(MessageHandler(filters.VOICE, self.handle_voice_message))  # 语音消息
         application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document_message))
 
     def run_bot(self):

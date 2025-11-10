@@ -28,6 +28,53 @@ def extract_hashtags(text):
     hashtags = re.findall(r'#(\w+)', text)
     return hashtags
 
+def get_time_period(hour):
+    """根据小时数返回时间段名称
+    
+    Args:
+        hour: 小时数 (0-23)
+        
+    Returns:
+        str: 时间段名称（凌晨/上午/下午/晚上）
+    """
+    if 0 <= hour < 6:
+        return "🌙 凌晨 (00:00-06:00)"
+    elif 6 <= hour < 12:
+        return "🌅 上午 (06:00-12:00)"
+    elif 12 <= hour < 18:
+        return "☀️ 下午 (12:00-18:00)"
+    else:
+        return "🌆 晚上 (18:00-24:00)"
+
+def get_hour_section(hour):
+    """获取小时段标题
+    
+    Args:
+        hour: 小时数 (0-23)
+        
+    Returns:
+        str: 小时段标题，例如 "09:00", "14:00"
+    """
+    return f"{hour:02d}:00"
+
+def check_section_exists(content, section_title):
+    """检查笔记内容中是否已存在指定的标题
+    
+    Args:
+        content: 笔记HTML内容
+        section_title: 要检查的标题文本
+        
+    Returns:
+        bool: 如果存在返回True，否则False
+    """
+    # 检查各级标题
+    patterns = [
+        f'<h1>{section_title}</h1>',
+        f'<h2>{section_title}</h2>',
+        f'<h3>{section_title}</h3>',
+    ]
+    return any(pattern in content for pattern in patterns)
+
 def format_message_content(message, hashtags=None):
     """格式化消息内容为日记格式"""
     if hashtags is None:
