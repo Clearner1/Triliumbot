@@ -3,7 +3,7 @@
   "info": {
     "version": "1.0.0",
     "title": "ETAPI",
-    "description": "External Trilium API",
+    "description": "External Trilium API\n\n## 🚨 IMPORTANT: Image Upload Issues and Solutions\n\n### Problem Description\nWhen uploading images via ETAPI, several common issues can occur:\n\n1. **Images upload successfully but display as broken/corrupted**\n2. **500 Server Error when uploading attachment content**\n3. **Images not appearing in notes despite successful upload**\n\n### Root Cause: Confusion between \"Attachment Content\" and \"Note Content\"\n\nThe fundamental issue is misunderstanding what the `content` field represents:\n\n- **Attachment Content**: Raw binary data (JPEG/PNG bytes)\n- **Note Content**: HTML text that references the attachment\n\n### ❌ Incorrect Approaches\n\n#### 1. Base64 Encoding (Most Common Mistake)\n```python\n# WRONG: Sending base64 as content\ncontent_base64 = base64.b64encode(file_data).decode('utf-8')\nattachment_data = {\n    'content': content_base64  # ❌ This saves base64 text, not image data\n}\nPOST /attachments (attachment_data)\n```\n\n#### 2. HTML in Attachment Content\n```python\n# WRONG: Treating attachment content as HTML\nimage_html = '<figure><img src=\"...\"></figure>'\nPUT /attachments/{id}/content  # ❌ Sends HTML instead of image bytes\n```\n\n#### 3. Missing HTML Reference in Note\n```python\n# WRONG: Upload attachment but don't add reference to note\nupload_attachment(file, note_id)\n# ❌ Note content doesn't contain image reference\n```\n\n### ✅ Correct Solution: Two-Step Upload Process\n\n#### Step 1: Create Attachment Record (Without Content)\n```python\n# Step 1: Create attachment metadata only\nattachment_data = {\n    'ownerId': note_id,\n    'role': 'image',  # or 'attachment'\n    'mime': 'image/jpeg',\n    'title': 'photo.jpg',\n    'position': 10\n    # ⚠️ IMPORTANT: Do NOT include 'content' field here!\n}\nattachment = POST /attachments (attachment_data)\nattachment_id = attachment['attachmentId']\n```\n\n#### Step 2: Upload Raw Binary Data\n```python\n# Step 2: Upload raw binary data\nheaders = {\n    'Authorization': 'ETAPITOKEN',\n    'Content-Type': 'application/octet-stream'  # Critical!\n}\nPUT /attachments/{attachment_id}/content\nheaders=headers\ndata=file_data  # Raw binary, NOT base64!\n```\n\n#### Step 3: Add HTML Reference to Note\n```python\n# Step 3: Generate HTML and update note content\nimage_html = f'<figure class=\"image\"><img src=\"api/attachments/{attachment_id}/image/photo.jpg\" alt=\"photo.jpg\"></figure>'\n\n# Get current note content\ncurrent_content = GET /notes/{note_id}/content\n\n# Append image reference\nnew_content = current_content + \"\\n\\n\" + image_html\nPUT /notes/{note_id}/content\ndata=new_content\n```\n\n### 🔑 Key Technical Details\n\n#### Content-Type Requirements\n- ❌ `Content-Type: image/jpeg` → Often causes 500 errors\n- ✅ `Content-Type: application/octet-stream` → Recommended for binary data\n\n#### File Size Verification\n```python\n# Verify upload success by checking content length\noriginal_size = len(file_data)  # e.g., 137650 bytes\nattachment_info = GET /attachments/{attachment_id}\ncontent_length = attachment_info['contentLength']  # Should match original\n\nif content_length == original_size:\n    print(\"✅ Upload successful\")\nelse:\n    print(f\"❌ Upload failed: {content_length} != {original_size}\")\n```\n\n#### HTML Format for Images\n```html\n<!-- Correct Trilium image format -->\n<figure class=\"image\">\n    <img style=\"aspect-ratio:912/500;\" src=\"api/attachments/{attachment_id}/image/{filename}\" width=\"912\" height=\"500\" alt=\"{filename}\">\n</figure>\n```\n\n### 🐛 Debugging Tips\n\n1. **Check Attachment Response**:\n   ```python\n   print(f\"Attachment ID: {attachment_id}\")\n   print(f\"Full response: {attachment}\")\n   ```\n\n2. **Verify Image URL in Browser**:\n   Direct access: `http://server/api/attachments/{id}/image/{filename}`\n\n3. **Compare File Sizes**:\n   Base64 encoded size ≈ original size × 4/3\n   If contentLength > original size, you probably uploaded base64\n\n4. **Check Network Tab**:\n   Look for 500 errors or incorrect response types\n\n### 📊 Complete Flow Summary\n\n```\n1. POST /attachments (metadata only) → attachment_id\n2. PUT /attachments/{id}/content (raw binary) → content verified\n3. GET /notes/{id}/content → current HTML\n4. PUT /notes/{id}/content (updated HTML) → image visible\n```\n\n### ⚡ Alternative Solutions\n\n#### Use trilium-py Library\n```python\nfrom trilium_py.client import ETAPI\nea = ETAPI(server_url, token)\nres = ea.create_attachment(\n    ownerId='note_id',\n    file_path='/path/to/image.jpg',\n)\n```\n\n#### Environment Variables\n```bash\n# If experiencing upload size issues\nexport TRILIUM_NO_UPLOAD_LIMIT=true\n```\n\n---",
     "contact": {
       "name": "Trilium Notes Team",
       "email": "contact@eliandoran.me",
@@ -822,7 +822,7 @@
         "description": "Updates attachment content identified by its ID",
         "operationId": "putAttachmentContentById",
         "requestBody": {
-          "description": "html content of attachment",
+          "description": "⚠️ IMPORTANT: For binary attachments (images, files), use raw binary data, not base64 encoding. See documentation below for proper upload procedure.",
           "required": true,
           "content": {
             "text/plain": {
@@ -1539,24 +1539,28 @@
       },
       "Attachment": {
         "type": "object",
-        "description": "Attachment is owned by a note, has title and content",
+        "description": "Attachment is owned by a note, has title and content. 🔍 Use contentLength to verify successful upload - should match original file size, not base64 size.",
         "properties": {
           "attachmentId": {
             "$ref": "#/components/schemas/EntityId",
-            "readOnly": true
+            "readOnly": true,
+            "description": "⚠️ Use this ID for PUT /attachments/{id}/content endpoint"
           },
           "ownerId": {
             "$ref": "#/components/schemas/EntityId",
             "description": "identifies the owner of the attachment, is either noteId or revisionId"
           },
           "role": {
-            "type": "string"
+            "type": "string",
+            "description": "Use 'image' for images to enable proper display"
           },
           "mime": {
-            "type": "string"
+            "type": "string",
+            "description": "MIME type - must match actual file content"
           },
           "title": {
-            "type": "string"
+            "type": "string",
+            "description": "Filename used in the HTML img src attribute"
           },
           "position": {
             "type": "integer",
@@ -1580,32 +1584,39 @@
           },
           "contentLength": {
             "type": "integer",
-            "format": "int32"
+            "format": "int32",
+            "description": "🔑 CRITICAL: Verify this matches original file size (not base64 size). If larger, you uploaded base64 instead of binary data."
           }
         }
       },
       "CreateAttachment": {
         "type": "object",
+        "description": "⚠️ CRITICAL: For binary attachments (images, files), DO NOT include the 'content' field in the initial POST request. Use the two-step process: 1) POST metadata without content, 2) PUT raw binary data to /attachments/{id}/content",
         "properties": {
           "ownerId": {
             "$ref": "#/components/schemas/EntityId",
             "description": "identifies the owner of the attachment, is either noteId or revisionId"
           },
           "role": {
-            "type": "string"
+            "type": "string",
+            "description": "Use 'image' for images, 'attachment' for other files"
           },
           "mime": {
-            "type": "string"
+            "type": "string",
+            "description": "MIME type, required for binary files (e.g., 'image/jpeg', 'image/png')"
           },
           "title": {
-            "type": "string"
+            "type": "string",
+            "description": "Filename of the attachment"
           },
           "content": {
-            "type": "string"
+            "type": "string",
+            "description": "⚠️ DO NOT USE for binary attachments. Only use for text-based attachments. For images/files, use PUT /attachments/{id}/content instead."
           },
           "position": {
             "type": "integer",
-            "format": "int32"
+            "format": "int32",
+            "description": "Position in the attachment list"
           }
         }
       },
