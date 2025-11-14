@@ -20,6 +20,11 @@ class Config:
     DIARY_TEMPLATE = os.getenv('DIARY_TEMPLATE', '')
     TIMEZONE = os.getenv('TIMEZONE', 'Asia/Shanghai')
 
+    # ASR语音识别配置
+    DOUBAO_APP_KEY = os.getenv('DOUBAO_APP_KEY')
+    DOUBAO_ACCESS_KEY = os.getenv('DOUBAO_ACCESS_KEY')
+    ASR_ENABLED = os.getenv('ASR_ENABLED', 'false').lower() == 'true'
+
     # 日志配置
     LOG_LEVEL = logging.INFO
 
@@ -39,13 +44,12 @@ class Config:
 
 # 日志配置
 def setup_logging():
-    """设置日志"""
+    """设置日志 - 仅输出到控制台，不保存到文件"""
     logging.basicConfig(
         level=Config.LOG_LEVEL,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler('telegram_trilium_bot.log', encoding='utf-8'),
-            logging.StreamHandler()
+            logging.StreamHandler()  # 仅输出到控制台，不写文件
         ]
     )
 
