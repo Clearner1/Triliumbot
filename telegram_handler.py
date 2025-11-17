@@ -643,8 +643,12 @@ class TelegramBotHandler:
         logger.info("Telegram Bot 启动中...")
         logger.info("Bot 启动成功，开始监听消息...")
         
-        # 保存事件循环引用（在启动后获取）
-        self.event_loop = asyncio.get_event_loop()
+        # 保存事件循环引用（在新版本中使用新方法）
+        try:
+            self.event_loop = asyncio.get_event_loop()
+        except RuntimeError:
+            self.event_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.event_loop)
         logger.debug(f"已保存事件循环引用: {self.event_loop}")
-        
+
         application.run_polling()

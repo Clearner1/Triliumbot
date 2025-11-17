@@ -26,7 +26,7 @@ class Config:
     ASR_ENABLED = os.getenv('ASR_ENABLED', 'false').lower() == 'true'
 
     # 日志配置
-    LOG_LEVEL = logging.INFO
+    LOG_LEVEL = logging.INFO  # 正常日志级别
 
     @classmethod
     def validate_config(cls):
