@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  trilium-telegram-bot:
+    build: .
+    container_name: trilium-telegram-bot
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+      - ./.env:/app/.env:ro  # 只读挂载.env文件
+    environment:
+      - PYTHONIOENCODING=utf-8
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONUNBUFFERED=1
+    networks:
+      - trilium-network
+
+networks:
+  trilium-network:
+    driver: bridge
